@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Agar.io FFA — Free For All</title>
+  <meta name="description" content="Play Agar.io-style Free-For-All. Eat, split, grow, and dominate!">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=JetBrains+Mono:wght@500&display=swap"
+    rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+  <!-- Start Screen -->
+  <div id="startScreen">
+    <div class="start-card">
+      <h1 class="logo">AGAR<span class="logo-dot">.IO</span></h1>
+      <p class="subtitle">Free-For-All</p>
+      <input type="text" id="nameInput" placeholder="Enter your name" maxlength="15" autocomplete="off" autofocus>
+      <button id="playBtn">▶ PLAY</button>
+      <div class="controls-hint">
+        <div class="hint"><kbd>Mouse</kbd> Move</div>
+        <div class="hint"><kbd>Space</kbd> Split</div>
+        <div class="hint"><kbd>W</kbd> Eject Mass</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Game Canvas -->
+  <canvas id="gameCanvas"></canvas>
+
+  <!-- HUD Overlay -->
+  <div id="hud" class="hidden">
+    <div id="scoreBar">Score: <span id="scoreValue">0</span></div>
+    <div id="leaderboard">
+      <h3>🏆 Leaderboard</h3>
+      <ol id="lbList"></ol>
+    </div>
+    <canvas id="minimap" width="180" height="180"></canvas>
+  </div>
+
+  <!-- Death Screen -->
+  <div id="deathScreen" class="hidden">
+    <div class="death-card">
+      <h2>💀 Game Over</h2>
+      <p class="death-msg">You were consumed!</p>
+      <div class="death-stats">
+        <div class="stat-row"><span class="stat-label">Score</span><span id="finalScore" class="stat-value">0</span>
+        </div>
+        <div class="stat-row"><span class="stat-label">Time Alive</span><span id="timeAlive"
+            class="stat-value">0:00</span></div>
+        <div class="stat-row"><span class="stat-label">Best Rank</span><span id="topPosition"
+            class="stat-value">-</span></div>
+      </div>
+      <button id="respawnBtn">▶ PLAY AGAIN</button>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+
+</html>
