@@ -28,11 +28,83 @@ const C = {
   LB_SIZE: 10
 };
 
+// ── Spatial Hash Grid ──
+class SpatialHash {
+  constructor(cellSize) {
+    this.cellSize = cellSize;
+    this.cells = new Map();
+  }
+  insert(obj, x, y, radius) {
+    const minX = Math.floor((x - radius) / this.cellSize);
+    const maxX = Math.floor((x + radius) / this.cellSize);
+    const minY = Math.floor((y - radius) / this.cellSize);
+    const maxY = Math.floor((y + radius) / this.cellSize);
+    for (let cx = minX; cx <= maxX; cx++) {
+      for (let cy = minY; cy <= maxY; cy++) {
+        const key = cx + "," + cy;
+        let arr = this.cells.get(key);
+        if (!arr) { arr = []; this.cells.set(key, arr); }
+        arr.push(obj);
+      }
+    }
+  }
+  query(x, y, radius) {
+    const minX = Math.floor((x - Math.max(0, radius)) / this.cellSize);
+    const maxX = Math.floor((x + Math.max(0, radius)) / this.cellSize);
+    const minY = Math.floor((y - Math.max(0, radius)) / this.cellSize);
+    const maxY = Math.floor((y + Math.max(0, radius)) / this.cellSize);
+    const results = new Set();
+    for (let cx = minX; cx <= maxX; cx++) {
+      for (let cy = minY; cy <= maxY; cy++) {
+        const key = cx + "," + cy;
+        const arr = this.cells.get(key);
+        if (arr) for (let i = 0; i < arr.length; i++) results.add(arr[i]);
+      }
+    }
+    return Array.from(results);
+  }
+  clear() {
+    this.cells.clear();
+  }
+}
+
+// ── Web Audio Engine ──
+const audio = {
+  ctx: null,
+  init() {
+    if (this.ctx) return;
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (AudioContext) { this.ctx = new AudioContext(); this.ctx.resume(); }
+  },
+  play(type, freq, dur, vol, detune = 0) {
+    if (!this.ctx) return;
+    try {
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
+      if (detune) osc.detune.value = detune;
+      gain.gain.setValueAtTime(vol * masterVol * 2.0, this.ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + dur);
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+      osc.start();
+      osc.stop(this.ctx.currentTime + dur);
+    } catch (e) { }
+  },
+  eat() { this.play("sine", 600 + Math.random() * 200, 0.1, 0.1); },
+  boost() { this.play("sawtooth", 100, 0.2, 0.05, Math.random() * 50); },
+  die() { this.play("square", 50, 0.5, 0.3); this.play("sawtooth", 100, 0.5, 0.3); },
+  phase() { this.play("sine", 1200, 0.4, 0.1); },
+  emp() { this.play("square", 40, 0.8, 0.4); }
+};
+
 // ── Global State ──
 const state = {
   snakes: [],
   food: [],
   dropped: [],
+  grid: new SpatialHash(300),
   time: 0,
   gameStarted: false,
 };
@@ -44,6 +116,10 @@ let nextId = 1;
 let mouseScreenX = 0, mouseScreenY = 0;
 let mouseWorldX = C.WORLD / 2, mouseWorldY = C.WORLD / 2;
 let isBoosting = false, phaseQueued = false;
+let playerClass = "phantom";
+let gfxGlow = true;
+let gfxCrt = true;
+let masterVol = 0.5;
 
 // Particles & Effects
 const particles = [];
@@ -201,7 +277,8 @@ function spawnSnake(isBot, playerName = "") {
 
     // Bot memory
     botTarget: null,
-    botActionTs: 0
+    botActionTs: 0,
+    pClass: isBot ? 'phantom' : playerClass
   };
 
   if (!isBot) {
@@ -234,7 +311,7 @@ function dropLoot(snake, killerId = null) {
       mass: massPerDrop * 0.8, // 80% conversion efficiency
       alive: true,
       magnetTarget: killerId,
-      magnetTime: state.time + 3.0 // Magnetic for 3 seconds
+      magnetTime: state.time + (killerId && state.snakes.find(s => s.id === killerId)?.pClass === 'scavenger' ? 6.0 : 3.0)
     });
   }
 }
@@ -312,79 +389,61 @@ function moveSnakes(dt) {
 
 // ── Collision ──
 function checkCollisions() {
-  // 1. Eat Food & Loot
   for (const s of state.snakes) {
     if (!s.alive) continue;
-    const r = getThickness(s.mass) * 0.8;
+
+    const tk = getThickness(s.mass);
+    const r = tk * 0.8;
     const rSq = r * r;
 
-    // Standard food
-    for (const f of state.food) {
-      if (!f.alive) continue;
-      if (distSq(s.head, f) < rSq) {
-        s.mass += f.mass;
-        f.alive = false;
-      }
-    }
+    // Query spatial hash for nearby entities
+    const nearby = state.grid.query(s.head.x, s.head.y, tk + 100);
 
-    // Dropped Loot (Magnetic logic handled in a separate pass for movement)
-    for (const d of state.dropped) {
-      if (!d.alive) continue;
-      if (distSq(s.head, d) < rSq * 1.5) { // slightly larger pickup radius for loot
-        s.mass += d.mass;
-        d.alive = false;
-        spawnParticles(d.x, d.y, 4, s.hue, 0.6, 0.5);
-        if (s === player) {
-          spawnFloatingText(d.x, d.y, `+${Math.round(d.mass)}`, "#ffbe0b", clamp(d.mass / 10, 0.8, 2.0));
+    // 1. Eat Food & Loot
+    for (const item of nearby) {
+      if (item.type === 'food' && item.obj.alive) {
+        if (distSq(s.head, item.obj) < rSq) {
+          s.mass += item.obj.mass;
+          item.obj.alive = false;
+          if (s === player) audio.eat();
         }
-      }
-    }
-  }
-
-  // 2. Head to Body Collisions (The Snake.io mechanic)
-  for (let i = 0; i < state.snakes.length; i++) {
-    const A = state.snakes[i];
-    if (!A.alive) continue;
-    if (state.time < A.phaseEndTime) continue; // Phasing snakes are invincible to crashes
-    if (state.time - A.spawnTime < C.SPAWN_PROTECT) continue;
-
-    const AThickness = getThickness(A.mass);
-
-    for (let j = 0; j < state.snakes.length; j++) {
-      if (i === j) continue;
-      const B = state.snakes[j];
-      if (!B.alive) continue;
-
-      const BThickness = getThickness(B.mass);
-      const hitDist = (AThickness * 0.45) + (BThickness * 0.45);
-      const hitDistSq = hitDist * hitDist;
-
-      // Broad phase
-      if (Math.abs(A.head.x - B.head.x) > 1500 || Math.abs(A.head.y - B.head.y) > 1500) continue;
-
-      // Check A head vs B body points (skip first 2 points to avoid weird head-to-head ties and allow tight cutoffs)
-      let crashed = false;
-      for (let k = 2; k < B.points.length; k++) {
-        const pt = B.points[k];
-        if (distSq(A.head, pt) < hitDistSq) {
-          crashed = true;
-          break;
-        }
-      }
-
-      if (crashed) {
-        // A crashed into B! B gets the magnetic credit
-        A.alive = false;
-        dropLoot(A, B.id);
-
-        spawnParticles(A.head.x, A.head.y, 40, A.hue, 3.0, 1.5);
-        if (A === player || B === player) {
-          screenShake.magnitude += 25; // Massive shake
-          if (B === player) {
-            spawnFloatingText(A.head.x, A.head.y, "KILLED!", "#ff1f5a", 2.0);
+      } else if (item.type === 'loot' && item.obj.alive) {
+        if (distSq(s.head, item.obj) < rSq * 1.5) {
+          s.mass += item.obj.mass;
+          item.obj.alive = false;
+          spawnParticles(item.obj.x, item.obj.y, 4, s.hue, 0.6, 0.5);
+          if (s === player) {
+            audio.eat();
+            spawnFloatingText(item.obj.x, item.obj.y, `+${Math.round(item.obj.mass)}`, "#ffbe0b", clamp(item.obj.mass / 10, 0.8, 2.0));
           }
         }
-        break; // A is dead, stop checking
+      }
+    }
+
+    // 2. Head to Body Collisions (The Snake.io mechanic)
+    if (state.time < s.phaseEndTime) continue; // Phasing snakes are invincible
+    if (state.time - s.spawnTime < C.SPAWN_PROTECT) continue;
+
+    let crashed = false;
+    for (const item of nearby) {
+      if (item.type === 'body' && item.obj.alive && item.obj !== s) {
+        const B = item.obj;
+        const BThickness = getThickness(B.mass);
+        const hitDist = (tk * 0.45) + (BThickness * 0.45);
+        if (distSq(s.head, B.points[item.index]) < hitDist * hitDist) {
+          crashed = true;
+          s.alive = false;
+          dropLoot(s, B.id);
+          spawnParticles(s.head.x, s.head.y, 40, s.hue, 3.0, 1.5);
+          if (s === player || B === player) {
+            audio.die();
+            screenShake.magnitude += 25; // Massive shake
+            if (B === player) {
+              spawnFloatingText(s.head.x, s.head.y, "KILLED!", "#ff1f5a", 2.0);
+            }
+          }
+          break; // Dead
+        }
       }
     }
   }
@@ -402,7 +461,7 @@ function updateMagneticLoot(dt) {
         const distToK = Math.hypot(dirX, dirY) || 1;
 
         // Massive speed boost toward killer
-        const magSpeed = 800;
+        const magSpeed = (killer.pClass === 'scavenger') ? 1600 : 800;
         d.x += (dirX / distToK) * magSpeed * dt;
         d.y += (dirY / distToK) * magSpeed * dt;
       }
@@ -415,6 +474,8 @@ function updateBotAI(dt) {
   for (const bot of state.snakes) {
     if (!bot.isBot || !bot.alive) continue;
 
+    const nearby = state.grid.query(bot.head.x, bot.head.y, 1000);
+
     // Occasionally update targets
     if (state.time > bot.botActionTs) {
       bot.botActionTs = state.time + rand(0.5, 2.0);
@@ -423,33 +484,32 @@ function updateBotAI(dt) {
       let bestT = null;
       let minD = 999999;
 
-      // Prioritize large dropped loot
-      for (const d of state.dropped) {
-        if (!d.alive || (d.magnetTarget && d.magnetTarget !== bot.id)) continue;
-        const dsq = distSq(bot.head, d);
-        if (dsq < 1000 * 1000 && dsq < minD) {
-          minD = dsq;
-          bestT = d;
+      for (const item of nearby) {
+        if (item.type === 'loot' && item.obj.alive && (!item.obj.magnetTarget || item.obj.magnetTarget === bot.id)) {
+          const dsq = distSq(bot.head, item.obj);
+          if (dsq < 1000 * 1000 && dsq < minD) {
+            minD = dsq;
+            bestT = item.obj;
+          }
         }
       }
 
       if (!bestT) {
-        for (const f of state.food) {
-          if (!f.alive) continue;
-          const dsq = distSq(bot.head, f);
-          if (dsq < 800 * 800 && dsq < minD) {
-            minD = dsq;
-            bestT = f;
+        for (const item of nearby) {
+          if (item.type === 'food' && item.obj.alive) {
+            const dsq = distSq(bot.head, item.obj);
+            if (dsq < 800 * 800 && dsq < minD) {
+              minD = dsq;
+              bestT = item.obj;
+            }
           }
         }
       }
 
       if (bestT) {
         bot.targetAngle = Math.atan2(bestT.y - bot.head.y, bestT.x - bot.head.x);
-        // Boost randomly if targeting big loot
         bot.boosting = bot.mass > 50 && bestT.mass > 10 && rand(0, 1) > 0.6;
       } else {
-        // Wander
         bot.targetAngle += rand(-1.0, 1.0);
         bot.boosting = false;
       }
@@ -462,22 +522,19 @@ function updateBotAI(dt) {
 
     // Wall avoid
     if (px < 0 || px > C.WORLD || py < 0 || py > C.WORLD) {
-      // Turn towards center
       const centerAngle = Math.atan2(C.WORLD / 2 - bot.head.y, C.WORLD / 2 - bot.head.x);
       bot.targetAngle = centerAngle;
       bot.botActionTs = state.time + 1.0;
     } else {
       // Body avoid
       let imminentDanger = false;
-      for (const other of state.snakes) {
-        if (other === bot) continue;
-        for (let k = 0; k < other.points.length; k += 3) {
-          const pt = other.points[k];
-          if (distSq({ x: px, y: py }, pt) < (getThickness(other.mass) * 1.5) ** 2) {
+      const lookNearby = state.grid.query(px, py, getThickness(bot.mass) * 2);
+      for (const item of lookNearby) {
+        if (item.type === 'body' && item.obj !== bot) {
+          if (distSq({ x: px, y: py }, item.obj.points[item.index]) < (getThickness(item.obj.mass) * 1.5) ** 2) {
             imminentDanger = true; break;
           }
         }
-        if (imminentDanger) break;
       }
 
       if (imminentDanger) {
@@ -501,6 +558,20 @@ function simTick(dt) {
   state.time += dt;
   if (!state.gameStarted) return;
 
+  // Rebuild Spatial Hash Grid
+  state.grid.clear();
+  for (const f of state.food) if (f.alive) state.grid.insert({ type: 'food', obj: f }, f.x, f.y, 10);
+  for (const d of state.dropped) if (d.alive) state.grid.insert({ type: 'loot', obj: d }, d.x, d.y, 30);
+  for (const s of state.snakes) {
+    if (!s.alive) continue;
+    const t = getThickness(s.mass);
+    state.grid.insert({ type: 'head', obj: s }, s.head.x, s.head.y, t);
+    // skip first 2 points to avoid head-to-head false positives 
+    for (let i = 2; i < s.points.length; i += 3) {
+      state.grid.insert({ type: 'body', obj: s, index: i }, s.points[i].x, s.points[i].y, t);
+    }
+  }
+
   if (player && player.alive) {
     player.targetAngle = Math.atan2(mouseWorldY - player.head.y, mouseWorldX - player.head.x);
     player.boosting = isBoosting;
@@ -508,13 +579,46 @@ function simTick(dt) {
     if (phaseQueued) {
       phaseQueued = false;
       if (state.time > player.phaseCooldownTime && player.mass > 80) {
-        player.phaseEndTime = state.time + C.PHASE_DURATION;
         player.phaseCooldownTime = state.time + C.PHASE_COOLDOWN;
-        player.mass -= 30; // Cost of phase shift
-        screenShake.magnitude += 10;
-        spawnFloatingText(player.head.x, player.head.y, "PHASE SHIFT!", "#00e5ff", 1.8);
+        player.mass -= 30; // Cost of ability
+        if (player.pClass === 'phantom') {
+          player.phaseEndTime = state.time + C.PHASE_DURATION;
+          audio.phase();
+          screenShake.magnitude += 10;
+          spawnFloatingText(player.head.x, player.head.y, "PHASE SHIFT!", "#00e5ff", 1.8);
+        } else if (player.pClass === 'juggernaut') {
+          audio.emp();
+          screenShake.magnitude += 25;
+          spawnFloatingText(player.head.x, player.head.y, "EMP SHOCKWAVE!", "#ff00e5", 2.0);
+          spawnParticles(player.head.x, player.head.y, 80, 300, 3.0, 1.5);
+
+          const empRadius = getThickness(player.mass) * 1.5 + 600;
+          const nearby = state.grid.query(player.head.x, player.head.y, empRadius);
+          for (const item of nearby) {
+            if (item.type === 'head' && item.obj !== player && item.obj.alive) {
+              if (distSq(player.head, item.obj.head) < empRadius * empRadius) {
+                item.obj.mass = Math.max(C.SPAWN_MASS, item.obj.mass - 30);
+                item.obj.botActionTs = state.time + 4.0; // Stun AI
+                spawnParticles(item.obj.head.x, item.obj.head.y, 20, 300, 2.0, 1.0);
+              }
+            }
+          }
+        } else if (player.pClass === 'scavenger') {
+          audio.emp();
+          screenShake.magnitude += 10;
+          player.phaseEndTime = state.time + C.PHASE_DURATION * 0.5; // Short invuln
+          spawnFloatingText(player.head.x, player.head.y, "MAGNET BURST!", "#ffbe0b", 1.8);
+          const nearby = state.grid.query(player.head.x, player.head.y, 1500);
+          for (const item of nearby) {
+            if (item.type === 'loot' && item.obj.alive && !item.obj.magnetTarget) {
+              item.obj.magnetTarget = player.id;
+              item.obj.magnetTime = state.time + 3.0;
+            }
+          }
+        }
       }
     }
+    if (player.boosting && Math.random() < 0.1) audio.boost(); // Throttle boost sound slightly
   }
 
   updateBotAI(dt);
@@ -629,11 +733,11 @@ function drawSnakes() {
 
     if (isPhasing) {
       ctx.globalAlpha = 0.4;
-      ctx.shadowBlur = thickness;
+      ctx.shadowBlur = gfxGlow ? thickness : 0;
       ctx.shadowColor = `hsl(${s.hue}, 100%, 80%)`;
     } else {
       // Glow logic
-      ctx.shadowBlur = s.boosting ? thickness * 0.8 : thickness * 0.3;
+      ctx.shadowBlur = gfxGlow ? (s.boosting ? thickness * 0.8 : thickness * 0.3) : 0;
       ctx.shadowColor = `hsl(${s.hue}, 80%, 50%)`;
     }
 
@@ -727,7 +831,7 @@ function drawFood() {
   for (const d of state.dropped) {
     if (!d.alive) continue;
     ctx.fillStyle = `hsl(${d.hue}, 100%, 75%)`;
-    ctx.shadowBlur = 15;
+    ctx.shadowBlur = gfxGlow ? 15 : 0;
     ctx.shadowColor = `hsl(${d.hue}, 100%, 60%)`;
     ctx.beginPath();
     // Drops scale with mass visually
@@ -831,6 +935,12 @@ function tick(ts) {
 
   if (state.gameStarted && player && !player.alive) {
     if (hudEl.classList.contains("hidden") === false) showDeathScreen();
+    // Continue simulation so background bots keep moving
+    accumulator += rawDt;
+    while (accumulator >= SIM_DT) {
+      simTick(SIM_DT);
+      accumulator -= SIM_DT;
+    }
   } else if (state.gameStarted && player && player.alive) {
     accumulator += rawDt;
     while (accumulator >= SIM_DT) {
@@ -876,10 +986,39 @@ function bindInput() {
     }
   });
 
-  document.getElementById("playBtn").addEventListener("click", startGame);
-  document.getElementById("respawnBtn").addEventListener("click", respawnPlayer);
+  document.getElementById("playBtn").addEventListener("click", () => {
+    audio.init();
+    startGame();
+  });
+  document.getElementById("respawnBtn").addEventListener("click", () => {
+    audio.init();
+    respawnPlayer();
+  });
   nameInputEl.addEventListener("keydown", e => {
-    if (e.key === "Enter") startGame();
+    if (e.key === "Enter") {
+      audio.init();
+      startGame();
+    }
+  });
+
+  // UI Setup
+  const settingsModal = document.getElementById("settingsModal");
+  document.getElementById("settingsBtn").addEventListener("click", () => settingsModal.classList.remove("hidden"));
+  document.getElementById("closeSettingsBtn").addEventListener("click", () => settingsModal.classList.add("hidden"));
+
+  document.getElementById("crtToggle").addEventListener("change", e => {
+    gfxCrt = e.target.checked;
+    document.getElementById("crtOverlay").style.display = gfxCrt ? "block" : "none";
+  });
+  document.getElementById("glowToggle").addEventListener("change", e => gfxGlow = e.target.checked);
+  document.getElementById("volSlider").addEventListener("input", e => masterVol = parseFloat(e.target.value));
+
+  document.querySelectorAll(".class-card").forEach(el => {
+    el.addEventListener("click", e => {
+      document.querySelectorAll(".class-card").forEach(c => c.classList.remove("active"));
+      e.currentTarget.classList.add("active");
+      playerClass = e.currentTarget.dataset.class;
+    });
   });
 }
 

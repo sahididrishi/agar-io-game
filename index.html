@@ -19,18 +19,53 @@
     <div class="start-card">
       <h1 class="logo">GLOB<span class="logo-dot">Z</span></h1>
       <p class="subtitle">Free-For-All</p>
+      <div class="class-selection" id="classSelection">
+        <div class="class-card active" data-class="phantom">
+          <h3>Phantom</h3>
+          <p>Space: Phase Dash</p>
+        </div>
+        <div class="class-card" data-class="juggernaut">
+          <h3>Juggernaut</h3>
+          <p>Space: EMP Shockwave</p>
+        </div>
+        <div class="class-card" data-class="scavenger">
+          <h3>Scavenger</h3>
+          <p>Passive: 2x Magnet Pull</p>
+        </div>
+      </div>
       <input type="text" id="nameInput" placeholder="Enter your name" maxlength="15" autocomplete="off" autofocus>
-      <button id="playBtn">▶ PLAY</button>
-      <div class="controls-hint">
-        <div class="hint"><kbd>Mouse</kbd> Steer</div>
-        <div class="hint"><kbd>Click</kbd> Boost</div>
-        <div class="hint"><kbd>Space</kbd> Phase Dash</div>
+      <div class="btn-row">
+        <button id="playBtn">▶ PLAY</button>
+        <button id="settingsBtn" class="icon-btn" title="Settings">⚙</button>
       </div>
     </div>
   </div>
 
   <!-- Game Canvas -->
   <canvas id="gameCanvas"></canvas>
+
+  <!-- Post Processing Overlay -->
+  <div id="crtOverlay"></div>
+
+  <!-- Settings Modal -->
+  <div id="settingsModal" class="hidden">
+    <div class="settings-card">
+      <h2>Settings</h2>
+      <div class="settings-row">
+        <label>CRT Scanlines</label>
+        <input type="checkbox" id="crtToggle" checked>
+      </div>
+      <div class="settings-row">
+        <label>High Graphics (Glow & Particles)</label>
+        <input type="checkbox" id="glowToggle" checked>
+      </div>
+      <div class="settings-row">
+        <label>Master Volume</label>
+        <input type="range" id="volSlider" min="0" max="1" step="0.1" value="0.5">
+      </div>
+      <button id="closeSettingsBtn">Close</button>
+    </div>
+  </div>
 
   <!-- HUD Overlay -->
   <div id="hud" class="hidden">
