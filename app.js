@@ -65,6 +65,7 @@ const finalScoreEl = document.getElementById("finalScore");
 const timeAliveEl = document.getElementById("timeAlive");
 const topPositionEl = document.getElementById("topPosition");
 const scoreValueEl = document.getElementById("scoreValue");
+const scoreLevelEl = document.getElementById("scoreLevel");
 const lbListEl = document.getElementById("lbList");
 const hudEl = document.getElementById("hud");
 const minimapCanvas = document.getElementById("minimap");
@@ -161,6 +162,11 @@ let mouseScreenX = 0, mouseScreenY = 0;
 let mouseWorldX = C.WORLD / 2, mouseWorldY = C.WORLD / 2;
 let splitQueued = false, ejectQueued = false;
 
+// Particles & Effects
+const particles = [];
+const floatingTexts = [];
+let screenShake = { x: 0, y: 0, magnitude: 0 };
+
 // Player ref
 let player = null;
 let bestRank = 999;
@@ -169,6 +175,84 @@ let bestRank = 999;
 let prevTs = 0, fpsFrames = 0, fpsTime = 0, fpsDisplay = 0;
 const SIM_DT = 1 / 30; // 30Hz fixed step
 let accumulator = 0;
+
+// ── Particle System ──
+function spawnParticles(x, y, count, colorHue, speedMult = 1, lifeMult = 1) {
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = (Math.random() * 400 + 100) * speedMult;
+    particles.push({
+      x, y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      hue: colorHue + (Math.random() * 20 - 10),
+      alpha: 1,
+      life: (0.5 + Math.random() * 0.5) * lifeMult,
+      maxLife: (0.5 + Math.random() * 0.5) * lifeMult,
+      radius: Math.random() * 5 + 2
+    });
+  }
+}
+
+function spawnFloatingText(x, y, text, color, scale = 1) {
+  floatingTexts.push({
+    x, y, text, color, scale,
+    life: 1.0, maxLife: 1.0,
+    vy: -150 - Math.random() * 50
+  });
+}
+
+function updateParticles(dt) {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.life -= dt;
+    if (p.life <= 0) {
+      if (i !== particles.length - 1) particles[i] = particles[particles.length - 1];
+      particles.pop();
+      continue;
+    }
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.vx *= Math.exp(-4.0 * dt); // heavy friction
+    p.vy *= Math.exp(-4.0 * dt);
+    p.alpha = Math.pow(Math.max(0, p.life / p.maxLife), 1.5);
+  }
+
+  for (let i = floatingTexts.length - 1; i >= 0; i--) {
+    const ft = floatingTexts[i];
+    ft.life -= dt;
+    if (ft.life <= 0) {
+      if (i !== floatingTexts.length - 1) floatingTexts[i] = floatingTexts[floatingTexts.length - 1];
+      floatingTexts.pop();
+      continue;
+    }
+    ft.y += ft.vy * dt;
+    ft.vy *= Math.exp(-2.0 * dt);
+  }
+
+  // Screen shake decay
+  if (screenShake.magnitude > 0.1) {
+    screenShake.magnitude = lerp(screenShake.magnitude, 0, 0.1);
+    screenShake.x = (Math.random() - 0.5) * screenShake.magnitude * 2;
+    screenShake.y = (Math.random() - 0.5) * screenShake.magnitude * 2;
+  } else {
+    screenShake.magnitude = 0;
+    screenShake.x = 0;
+    screenShake.y = 0;
+  }
+}
+
+
+// ── Progression Levels ──
+function getPlayerLevel(mass) {
+  if (mass < 100) return { level: 1, title: "Amoeba" };
+  if (mass < 300) return { level: 2, title: "Organism" };
+  if (mass < 1000) return { level: 3, title: "Hunter" };
+  if (mass < 2500) return { level: 4, title: "Beast" };
+  if (mass < 5000) return { level: 5, title: "Juggernaut" };
+  if (mass < 10000) return { level: 6, title: "Titan" };
+  return { level: 7, title: "Goliath" };
+}
 
 // ── Create Entities ──
 function makeFood() {
@@ -288,6 +372,9 @@ function performSplit(p) {
     cell.canMergeTime = state.time + (C.MERGE_BASE_MS + halfMass * C.MERGE_PER_MASS) / 1000;
 
     state.cells.push(child);
+
+    // Split effect trail burst
+    spawnParticles(cell.x, cell.y, 8, p.hue, 2.0, 1.5);
   }
 }
 
@@ -306,6 +393,9 @@ function performEject(p) {
     const ej = makeEjected(ex, ey, dir.x * C.EJECT_SPEED, dir.y * C.EJECT_SPEED,
       state.players.find(pp => pp.id === p.id)?.hue || 0, p.id);
     state.ejected.push(ej);
+
+    // Tiny puff on eject
+    spawnParticles(ex, ey, 3, ej.hue, 1.2, 0.5);
   }
 }
 
@@ -325,12 +415,19 @@ function virusSplitCell(cell, virus) {
 
   for (let i = 0; i < pieces; i++) {
     const angle = (Math.PI * 2 * i) / pieces + rand(-0.3, 0.3);
-    const child = makeCell(p.id, cell.x, cell.y, massPerPiece);
-    child.boostVx = Math.cos(angle) * C.SPLIT_BOOST * 0.8;
-    child.boostVy = Math.sin(angle) * C.SPLIT_BOOST * 0.8;
-    child.canMergeTime = state.time + (C.MERGE_BASE_MS + massPerPiece * C.MERGE_PER_MASS) / 1000;
+    const dir = { x: Math.cos(angle), y: Math.sin(angle) };
+    const boostMult = 0.8; // Factor for virus split boost
+    const child = makeCell(cell.ownerId, cell.x, cell.y, massPerPiece);
+    child.boostVx = dir.x * (C.SPLIT_BOOST * boostMult);
+    child.boostVy = dir.y * (C.SPLIT_BOOST * boostMult);
+    child.canMergeTime = state.time + 15; // 15s fixed virus cooldown
     state.cells.push(child);
   }
+
+  if (player && cell.ownerId === player.id) {
+    screenShake.magnitude += 15; // Big impact shake
+  }
+  spawnParticles(virus.x, virus.y, 25, 120, 1.5, 1.2); // Green virus explosion
 }
 
 // ── Movement ──
@@ -447,6 +544,13 @@ function eatFood() {
         cell.mass += f.mass;
         cell.radius = rad(cell.mass);
         f.alive = false;
+
+        // Minor eat sparks
+        const phue = state.players.find(p => p.id === cell.ownerId)?.hue || f.hue;
+        spawnParticles(f.x, f.y, 4, phue, 0.5, 0.6);
+        if (cell.ownerId === player?.id) {
+          spawnFloatingText(f.x, f.y, `+${Math.round(f.mass)}`, "#ffffff", 0.8);
+        }
       }
     }
   }
@@ -485,19 +589,42 @@ function cellVsCellEat() {
       if (!b.alive) continue;
       if (a.ownerId === b.ownerId) continue; // same owner handled by merge
 
-      // Spawn protection
       const pa = state.players.find(p => p.id === a.ownerId);
       const pb = state.players.find(p => p.id === b.ownerId);
+
+      // Spawn protection
       if (pa && state.time - pa.spawnTime < C.SPAWN_PROTECT_MS / 1000) continue;
       if (pb && state.time - pb.spawnTime < C.SPAWN_PROTECT_MS / 1000) continue;
 
-      if (a.mass < b.mass * C.EAT_RATIO) continue;
-
       const d = dist(a, b);
       if (d < a.radius - b.radius * C.EAT_OVERLAP) {
-        a.mass += b.mass;
-        a.radius = rad(a.mass);
-        b.alive = false;
+        if (a.mass >= b.mass * C.EAT_RATIO) {
+          // a eats b
+          a.mass += b.mass;
+          a.radius = rad(a.mass);
+          a.vx = (a.vx * a.mass + b.vx * b.mass) / a.mass;
+          a.vy = (a.vy * a.mass + b.vy * b.mass) / a.mass;
+          b.alive = false;
+
+          spawnParticles(b.x, b.y, 20, pb.hue, 2.0, 1.0);
+          if (pa === player || pb === player) {
+            screenShake.magnitude += 12;
+            if (pa === player) spawnFloatingText(b.x, b.y, `+${Math.round(b.mass)}`, "#ffbe0b", 1.5);
+          }
+        } else if (b.mass >= a.mass * C.EAT_RATIO) {
+          // b eats a
+          b.mass += a.mass;
+          b.radius = rad(b.mass);
+          b.vx = (b.vx * b.mass + a.vx * a.mass) / b.mass;
+          b.vy = (b.vy * b.mass + a.vy * a.mass) / b.mass;
+          a.alive = false;
+
+          spawnParticles(a.x, a.y, 20, pa.hue, 2.0, 1.0);
+          if (pa === player || pb === player) {
+            screenShake.magnitude += 12;
+            if (pb === player) spawnFloatingText(a.x, a.y, `+${Math.round(a.mass)}`, "#ffbe0b", 1.5);
+          }
+        }
 
         // Check if owner of b has any cells left
         if (pb) {
@@ -745,12 +872,19 @@ function updateCamera(dt) {
   const center = centerOfMass(player.id);
   const tm = totalMass(player.id);
 
-  cam.x = lerp(cam.x, center.x, 0.12);
-  cam.y = lerp(cam.y, center.y, 0.12);
+  // Cinematic spring camera
+  // Calculate raw target position
+  const targetX = lerp(cam.x, center.x, 0.12);
+  const targetY = lerp(cam.y, center.y, 0.12);
+
+  // Apply shake
+  cam.x = targetX + screenShake.x;
+  cam.y = targetY + screenShake.y;
 
   // Zoom out as mass increases — stay tighter for small cells
   const targetZoom = clamp(0.65 - Math.log(tm + 1) * 0.06, 0.06, 0.55);
-  cam.zoom = lerp(cam.zoom, targetZoom, 0.06);
+  // Add slight springiness to zoom
+  cam.zoom += (targetZoom - cam.zoom) * 0.08;
 }
 
 function screenToWorld(sx, sy) {
@@ -820,16 +954,26 @@ function drawFood() {
 function drawViruses() {
   for (const v of state.viruses) {
     const r = v.radius;
-    const spikes = 18;
+    const spikes = 22;
 
     // Spiky shape
-    ctx.fillStyle = "rgba(40, 200, 80, 0.35)";
-    ctx.strokeStyle = "rgba(40, 200, 80, 0.8)";
-    ctx.lineWidth = 3;
+    ctx.fillStyle = "rgba(60, 230, 90, 0.25)";
+    ctx.strokeStyle = "rgba(80, 255, 120, 0.9)";
+    ctx.lineWidth = 4;
+
+    // Virus glowing shadow
+    ctx.save();
+    ctx.shadowBlur = r * 0.5;
+    ctx.shadowColor = "rgba(80, 255, 120, 0.5)";
+
     ctx.beginPath();
+    // Add slow rotation to viruses
+    const baseAngle = state.time * 0.5;
     for (let i = 0; i <= spikes * 2; i++) {
-      const angle = (Math.PI * 2 * i) / (spikes * 2);
-      const spikeR = i % 2 === 0 ? r * 1.15 : r * 0.88;
+      const angle = baseAngle + (Math.PI * 2 * i) / (spikes * 2);
+      // Gentle pulse
+      const pulseR = r + Math.sin(state.time * 5 + i) * 2;
+      const spikeR = i % 2 === 0 ? pulseR * 1.15 : pulseR * 0.88;
       const px = v.x + Math.cos(angle) * spikeR;
       const py = v.y + Math.sin(angle) * spikeR;
       if (i === 0) ctx.moveTo(px, py);
@@ -838,6 +982,7 @@ function drawViruses() {
     ctx.closePath();
     ctx.fill();
     ctx.stroke();
+    ctx.restore();
   }
 }
 
@@ -867,8 +1012,8 @@ function drawCells() {
     // Player glow effect
     if (isPlayer) {
       ctx.save();
-      ctx.shadowColor = `hsla(${hue}, 80%, 60%, 0.6)`;
-      ctx.shadowBlur = r * 0.6;
+      ctx.shadowColor = `hsla(${hue}, 80%, 60%, 0.8)`;
+      ctx.shadowBlur = r * 0.8;
     }
 
     // Body gradient
@@ -876,24 +1021,39 @@ function drawCells() {
       cell.x - r * 0.2, cell.y - r * 0.25, r * 0.1,
       cell.x, cell.y, r
     );
-    grad.addColorStop(0, `hsla(${hue}, 85%, 65%, 0.95)`);
-    grad.addColorStop(0.7, `hsla(${hue}, 75%, 45%, 0.95)`);
-    grad.addColorStop(1, `hsla(${(hue + 25) % 360}, 70%, 30%, 0.95)`);
+    // Increased saturation for premium feel
+    grad.addColorStop(0, `hsla(${hue}, 95%, 70%, 0.98)`);
+    grad.addColorStop(0.7, `hsla(${hue}, 85%, 50%, 0.98)`);
+    grad.addColorStop(1, `hsla(${(hue + 25) % 360}, 80%, 35%, 0.98)`);
 
     ctx.fillStyle = grad;
+
+    // Dynamic Wobble / Stretch based on velocity
     ctx.beginPath();
-    ctx.arc(cell.x, cell.y, r, 0, Math.PI * 2);
+    const speed = Math.hypot(cell.vx + cell.boostVx, cell.vy + cell.boostVy);
+    if (speed > 50) {
+      // Elongate in direction of travel
+      const dirAngle = Math.atan2(cell.vy + cell.boostVy, cell.vx + cell.boostVx);
+      const stretch = Math.min(r * 0.3, speed * 0.05);
+
+      ctx.ellipse(cell.x, cell.y, r + stretch, Math.max(r * 0.5, r - stretch * 0.5), dirAngle, 0, Math.PI * 2);
+    } else {
+      // Idle slow geometric breathing 
+      const breath = Math.sin(state.time * 2 + cell.id) * (r * 0.03);
+      ctx.arc(cell.x, cell.y, r + breath, 0, Math.PI * 2);
+    }
+
     ctx.fill();
 
     if (isPlayer) ctx.restore();
 
     // Outline
-    ctx.lineWidth = isPlayer ? Math.max(3, r * 0.07) : Math.max(2, r * 0.04);
+    ctx.lineWidth = isPlayer ? Math.max(3, r * 0.08) : Math.max(2, r * 0.05);
     ctx.strokeStyle = isProtected
       ? `rgba(120, 255, 180, ${0.5 + Math.sin(state.time * 8) * 0.3})`
       : isPlayer
-        ? `hsla(${hue}, 90%, 85%, 0.7)`
-        : `hsla(${hue}, 60%, 80%, 0.4)`;
+        ? `hsla(${hue}, 100%, 85%, 0.9)`
+        : `hsla(${hue}, 70%, 85%, 0.5)`;
     ctx.stroke();
 
     // Name
@@ -1012,6 +1172,20 @@ function render() {
   ctx.fillStyle = "#0a1628";
   ctx.fillRect(0, 0, vw, vh);
 
+  // Parallax overlay grid effect for illusion of depth
+  ctx.strokeStyle = "rgba(40, 80, 150, 0.06)";
+  ctx.lineWidth = 1;
+  const pGap = 150 * cam.zoom;
+  const pxOff = (-cam.x * cam.zoom * 0.3) % pGap;
+  const pyOff = (-cam.y * cam.zoom * 0.3) % pGap;
+
+  for (let x = pxOff; x < canvas.width; x += pGap) {
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
+  }
+  for (let y = pyOff; y < canvas.height; y += pGap) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
+  }
+
   // World transform
   ctx.save();
   ctx.translate(vw / 2, vh / 2);
@@ -1027,7 +1201,41 @@ function render() {
 
   ctx.restore();
 
-  // FPS
+  // Draw Particles overlay
+  ctx.save();
+  ctx.translate(vw / 2, vh / 2);
+  ctx.scale(cam.zoom, cam.zoom);
+  ctx.translate(-cam.x, -cam.y);
+
+  // Particles
+  ctx.globalCompositeOperation = "screen";
+  for (const p of particles) {
+    ctx.fillStyle = `hsla(${p.hue}, 90%, 70%, ${p.alpha})`;
+    ctx.shadowBlur = p.radius * 2;
+    ctx.shadowColor = `hsla(${p.hue}, 100%, 60%, ${p.alpha})`;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.shadowBlur = 0;
+  ctx.globalCompositeOperation = "source-over";
+
+  // Floating text
+  for (const ft of floatingTexts) {
+    const alpha = Math.max(0, ft.life / ft.maxLife);
+    ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+    ctx.strokeStyle = `rgba(0, 0, 0, ${alpha * 0.8})`;
+    ctx.lineWidth = 4 * ft.scale;
+    ctx.font = `bold ${24 * ft.scale}px "Inter", sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.strokeText(ft.text, ft.x, ft.y);
+    ctx.fillText(ft.text, ft.x, ft.y);
+  }
+
+  ctx.restore();
+
+  // Draw HUD and overlays
   ctx.fillStyle = "rgba(255,255,255,0.4)";
   ctx.font = '12px "JetBrains Mono", monospace';
   ctx.textAlign = "right";
@@ -1103,6 +1311,7 @@ function tick(ts) {
       accumulator -= SIM_DT;
     }
 
+    updateParticles(rawDt);
     updateCamera(rawDt);
 
     // HUD update at ~5Hz
