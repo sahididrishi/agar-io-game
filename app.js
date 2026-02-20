@@ -799,26 +799,6 @@ function drawSnakes() {
       ctx.fillText(s.name, s.head.x, s.head.y - thickness);
     }
 
-    // Phase UI indicator
-    if (isPlayer) {
-      if (state.time < s.phaseCooldownTime) {
-        // Draw cooldown ring around player head
-        const pct = (s.phaseCooldownTime - state.time) / C.PHASE_COOLDOWN;
-        ctx.strokeStyle = "rgba(0, 229, 255, 0.4)";
-        ctx.lineWidth = 4;
-        ctx.beginPath();
-        ctx.arc(s.head.x, s.head.y, thickness + 15, -Math.PI / 2, Math.PI * 2 * pct - Math.PI / 2);
-        ctx.stroke();
-      } else {
-        // Ready indicator
-        ctx.strokeStyle = "rgba(0, 255, 100, 0.7)";
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.arc(s.head.x, s.head.y, thickness + 15 + Math.sin(state.time * 5) * 5, 0, Math.PI * 2);
-        ctx.stroke();
-      }
-    }
-
     ctx.restore();
   }
 }
