@@ -115,6 +115,7 @@ let nextId = 1;
 // Input State
 let mouseScreenX = 0, mouseScreenY = 0;
 let mouseWorldX = C.WORLD / 2, mouseWorldY = C.WORLD / 2;
+let targetMouseWorldX = C.WORLD / 2, targetMouseWorldY = C.WORLD / 2; // Smoothed target
 let isBoosting = false, phaseQueued = false;
 let playerClass = "phantom";
 let gfxGlow = true;
@@ -573,6 +574,10 @@ function simTick(dt) {
   }
 
   if (player && player.alive) {
+    // Smooth the mouse target coordinate
+    mouseWorldX = lerp(mouseWorldX, targetMouseWorldX, 0.4);
+    mouseWorldY = lerp(mouseWorldY, targetMouseWorldY, 0.4);
+
     player.targetAngle = Math.atan2(mouseWorldY - player.head.y, mouseWorldX - player.head.x);
     player.boosting = isBoosting;
 
@@ -841,6 +846,31 @@ function drawFood() {
   ctx.shadowBlur = 0;
 }
 
+function drawCursor() {
+  if (!state.gameStarted) return;
+  // Draw custom glowing reticle for better "game feel"
+  ctx.save();
+  ctx.translate(mouseWorldX, mouseWorldY);
+
+  // Outer pulsing ring
+  ctx.strokeStyle = `rgba(0, 229, 255, ${0.4 + Math.sin(state.time * 8) * 0.2})`;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  const radius = isBoosting ? 20 : 12;
+  ctx.arc(0, 0, radius, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // Inner dot
+  ctx.fillStyle = "#fff";
+  ctx.shadowBlur = 10;
+  ctx.shadowColor = "#00e5ff";
+  ctx.beginPath();
+  ctx.arc(0, 0, 4, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.restore();
+}
+
 let hudTimer = 0;
 function updateHUD() {
   if (!player || !player.alive) return;
@@ -878,6 +908,7 @@ function render() {
   drawGrid();
   drawFood();
   drawSnakes();
+  drawCursor();
   drawWorldBorder();
   ctx.restore();
 
@@ -973,8 +1004,8 @@ function bindInput() {
     mouseScreenX = e.clientX;
     mouseScreenY = e.clientY;
     const cw = screenToWorld(e.clientX, e.clientY);
-    mouseWorldX = cw.x;
-    mouseWorldY = cw.y;
+    targetMouseWorldX = cw.x;
+    targetMouseWorldY = cw.y;
   });
 
   document.addEventListener("mousedown", e => { if (e.button === 0) isBoosting = true; });
